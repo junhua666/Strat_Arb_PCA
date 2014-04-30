@@ -1,6 +1,9 @@
 Sys.setenv(TZ='UTC')
 startDate = as.Date("2009-01-02") #Specify what date to get the prices from
 endData = as.Date("2014-01-01")
+initDate = as.Date("2009-01-01")
+initEq = 1000000
+Test_stock = "AAPL"
 setwd("D:/Baruch_course/Algo_trading/Project")
 source("librarys[F].r")
 
@@ -25,79 +28,25 @@ if(length(v)!=0)
 
 y_Return = apply(y,2,diff)/y[-nrow(y),]
 Y_Norm = scale(y_Return, center = TRUE, scale = TRUE) # get the normalized matrix
-########################################################################################
-# the other way to do the principal analysis
-#PCA = prcomp(Y_Norm,center = F, scale = F,cor = T)
-##PCI = princomp(Y_Norm) ## for testing another way 
-#PC_1 = abs(PCA$rotation[,1])# principle component!
-#Eigen_Value = abs(PCA$sdev[1])
 
-#W_1 = PC_1/apply(y_Return,2,sd)
-#sum = sum(W_1)
-#W_1 = W_1/sum  # every stock has a weight
-#PL_EV1 = rep(0,nrow(y_Return))
-#for(i in 1:nrow(y_Return))
-#{
-#  PL_EV_1[i] = sum(W_1*y_Return[i,])
-#}
-########################################################################################
 Matrix = cor(Y_Norm)
 EI = eigen(Matrix)
 
-Weigths = EI$vectors*(matrix(1/apply(y_Return,2,sd),nrow=ncol(y),ncol=ncol(EI$vectors),byrow=F))
-
-#################################################Compare to the S&P###################
-EI$values[1]/sum(abs(EI$values))# first principle component explaination ratio
-EI$vectors[,1] = EI$vectors[,1]*-1 # eigen vector
-
-W = EI$vectors[,1]/as.numeric(apply(y_Return,2,sd))
-W = W/sum(W)
-PL_EV_1 = y_Return[,1]
-for(i in 1:nrow(y_Return))
-{
-  PL_EV_1[i] = sum(W*y_Return[i,])# you can sum up the portfolio's single return because we fix the total amount
-}
-plot(cumsum(PL_EV_1))
-
-
-
-getSymbols("SPY", src = "yahoo", from = startDate,end = endData)
-par(new = T)
-plot(cumsum(diff(Ad(SPY))/Ad(SPY)[-length(Ad(SPY))][-1]), col = "red", axes = F, xlab = NA, ylab = NA,main=NA)
-######################################################################################
-
 Weights = EI$vectors*(matrix(1/apply(y_Return,2,sd),nrow=ncol(y),ncol=ncol(EI$vectors),byrow=F))
 Per_Weights = Weights*(matrix(1/apply(Weights,2,sum),nrow=ncol(Weights),ncol=ncol(Weights),byrow=T))
-# the weights will sum up to 1 for each vector portfolio
 
-#EV_Portfolio_TS = y_Return %*% Per_Weights # each eigen value performance 
-#doesnt work!!
-EV_Portfolio_TS = as.xts(as.matrix(y_Return)%*%Per_Weights)# since the %*% operator will change the xts into a sigle column vector
-#[bug]: small bug when using View(cbind(EV_Portfolio_TS[,1],PL_EV_1)) the hours does not match!
+EV_Portfolio_TS = as.xts(as.matrix(y_Return)%*%Per_Weights)
 
 P_Stock = "P_stock"
 P_Port = "P_Portfolio"
-# names of two portfolio one is the single stock the other is the 
-Test_stock = "AAPL"
-getSymbols(Test_stock, src = "yahoo", from = startDate,end = endData)
-# one of the test stock
 account.st = "Account"
-
-#Set up Strategy
 arbstrat_P<-strategy("Mean_R_10P_Hedge")
 
-
-# Define Instruments
 currency("USD")
-for(st in stocksLst)
+for(st in ticker_names)
 {
   stock(st, currency="USD", multiplier=1)
 }
-#Single_Stock_Data = get(Test_stock,envir = stockData)
-#Dependent_Stock = diff(Ad(Single_Stock_Data))/Ad(Single_Stock_Data)[-length(Single_Stock_Data[-1])]
-# sp500 index cumsum return  cumsum(diff(Ad(SPY))/Ad(SPY)[-length(Ad(SPY))][-1])
-LM = lm(y_Return[,3]~as.matrix(EV_Portfolio_TS)[,c(1:5)])
-summary(LM)
 
 ########################################################################
 index = 3## which stock to choose!!
@@ -106,8 +55,9 @@ Mean_Reversion = function(x)
   
   if(NROW(x)<60){ result = NA} else 
   {
-    stock = x[,ncol(x)]
-    LM = lm(stock~as.matrix(x))
+    #stock = x[,ncol(x)]
+    stock = Ad(x) # get the adjusted value
+    LM = lm(stock~as.matrix(EV_Portfolio_TS))
     res <- LM$res
     alpha <- (LM$coef)[1]*252
     X_generator = function (n,data)# the n is the X_n which indicate the time
@@ -132,8 +82,12 @@ Mean_Reversion = function(x)
 N = 60 # estimation period
 Mean_Reversion_Roll_Apply<- function(x)
 {
-  ans = rollapply(x,N,FUN = Mean_Reversion,by.column=FALSE)
-  return (ans)
+  if(names(Ad(x))=="AAPL.Adjusted")
+  {
+    ans = rollapply(x,N,FUN = Mean_Reversion,by.column=FALSE)
+    return (ans)
+  }
+  return(-100)
 }
 
 ########################################################################
@@ -141,18 +95,6 @@ arbstrat_P<-add.indicator(
   strategy  =  arbstrat_P,
   name=  "Mean_Reversion_Roll_Apply",arguments	=list(x = quote(mktdata)),
   label		=	"sscore")
-#[Q]: why the merge function can not merge the two xts file ?????????????????????????????
-#[A]: because EV_Portfolio_TS using UTD and y_Return do not have time zone
-tzone(y_Return) = "UTC"
-Input_Data = merge(EV_Portfolio_TS,y_Return[,index])
-dimnames(Input_Data)[[2]][ncol(Input_Data)] = "Stock"
-SS<-applyIndicators(arbstrat_P,mktdata = Input_Data )
-plot(SS$X1.sscore)
-# drift term mean reversion optimization
-
-# LM gives us the beta for each principal component
-#LM = lm(y_Return[,3]~as.matrix(EV_Portfolio_TS)[,c(1:1)])
-#LM.test = lm(y_Return[,3]~as.numeric(PL_EV_1)) test is correct
 
 ################################################ Signals #############################
 
@@ -199,7 +141,7 @@ arbstrat_P<-add.signal(
     cross			= TRUE),
   label				= "Buytime")
 ##############################################################
-# buy Buytime
+
 ruleSignal1<- function (data = mktdata, timestamp, sigcol, sigval, orderqty = 0, 
                         ordertype, orderside = NULL, threshold = NULL, tmult = FALSE, 
                         replace = TRUE, delay = 1e-04, osFUN = "osNoOp", pricemethod = c("market"), portfolio, symbol, ..., ruletype, 
@@ -234,12 +176,11 @@ arbstrat_P<- add.rule(arbstrat_P,
                       type				=	"enter",
                       path.dep			=	TRUE,
                       label				=	"Entry")
-#initPortf(name=P_Stock, Test_stock , initDate=initDate)
-#initPortf(name=P_Port, stocksLst, initDate=initDate)
-initPortf(name=P_Port, quote(Input_Data), initDate=initDate)
+
+
+initPortf(name=P_Port, symbols = ticker_names, initDate=initDate)
 initAcct(account.st, portfolios=P_Port, initDate=initDate, initEq=initEq)
 #initAcct(account.st, portfolios=c(P_Stock,P_Port), initDate=initDate, initEq=initEq)
 
-initOrders(portfolio=P_Stock, initDate=initDate)
 initOrders(portfolio=P_Port, initDate=initDate)
-out <- applyStrategy(strategy=arbstrat_P, portfolios=P_Stock)
+out <- applyStrategy(strategy=arbstrat_P, portfolios=P_Port)
